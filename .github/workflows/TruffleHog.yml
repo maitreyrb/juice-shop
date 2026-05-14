@@ -3,23 +3,19 @@ name: TruffleHog Secret Scan
 on:
   push:
     branches:
-      - main
-      - master
-      - develop
-      - dev
+      - "**"
   pull_request:
     branches:
-      - "*"
+      - "**"
   workflow_dispatch:
 
 jobs:
-  trufflehog-scan:
+  trufflehog:
     name: TruffleHog Scan
     runs-on: ubuntu-latest
 
     permissions:
       contents: read
-      security-events: write
 
     steps:
       - name: Checkout Repository
@@ -27,15 +23,18 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Run TruffleHog Scan
+      - name: Pull TruffleHog Image
+        run: docker pull trufflesecurity/trufflehog:latest
+
+      - name: Run TruffleHog Git Scan
         run: |
           docker run --rm \
             -v "$PWD:/repo" \
             trufflesecurity/trufflehog:latest \
-            filesystem /repo \
+            git file:///repo \
             --results=verified,unknown \
             --fail
 
       - name: Scan Completed
         if: success()
-        run: echo "No secrets detected by TruffleHog."
+        run: echo "No secrets detected."
