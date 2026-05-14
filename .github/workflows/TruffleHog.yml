@@ -26,15 +26,27 @@ jobs:
       - name: Pull TruffleHog Image
         run: docker pull trufflesecurity/trufflehog:latest
 
-      - name: Run TruffleHog Git Scan
+      - name: Run TruffleHog Scan
         run: |
           docker run --rm \
             -v "$PWD:/repo" \
             trufflesecurity/trufflehog:latest \
             git file:///repo \
             --results=verified,unknown \
-            --fail
+            --json > trufflehog-report.json
 
-      - name: Scan Completed
-        if: success()
-        run: echo "No secrets detected."
+          if [ -s trufflehog-report.json ]; then
+            echo "Secrets detected!"
+            cat trufflehog-report.json
+            exit 1
+          fi
+
+      - name: Display Report
+        run: |
+          cat trufflehog-report.json
+
+      - name: Upload Scan Report
+        uses: actions/upload-artifact@v4
+        with:
+          name: trufflehog-report
+          path: trufflehog-report.json
