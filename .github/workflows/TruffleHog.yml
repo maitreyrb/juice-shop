@@ -1,0 +1,40 @@
+name: Secret Scanning - TruffleHog & GitGuardian
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+  security-events: write
+
+jobs:
+  trufflehog-scan:
+    name: TruffleHog OSS Scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          # Full git history is required for diff scanning
+          fetch-depth: 0
+
+      - name: Run TruffleHog (verified secrets only)
+        uses: trufflesecurity/trufflehog@main
+        with:
+          path: ./
+          base: ${{ github.event.repository.default_branch }}
+          head: HEAD
+          # --only-verified reduces noise by validating secrets against live APIs
+          extra_args: --only-verified --fail --json
+
+      - name: Run TruffleHog (full filesystem scan)
+        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+        uses: trufflesecurity/trufflehog@main
+        with:
+          path: ./
+          extra_args: --only-verified --fail
