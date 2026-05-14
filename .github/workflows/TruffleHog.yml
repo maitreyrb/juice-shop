@@ -2,7 +2,9 @@ name: TruffleHog Secret Scan
 
 on:
   push:
+    branches: [ master, main ]
   pull_request:
+    branches: [ master, main ]
   workflow_dispatch:
 
 jobs:
@@ -33,7 +35,7 @@ jobs:
 
       - name: Display Report
         run: |
-          echo "===== TruffleHog Findings ====="
+          echo "- TruffleHog Findings -"
           cat trufflehog-report.json
 
       - name: Upload Scan Report
