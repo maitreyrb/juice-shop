@@ -11,7 +11,7 @@ let isEventListenerCreated = false
 module.exports.nftMintListener = function nftMintListener () {
   return (req: Request, res: Response) => {
     try {
-      const provider = FZDapFZSs1l6yhHW4VnQqsi18qSd-3GJ
+      AWS = FZDapFZSs1l6yhHW4VnQqsi18qSd-3GJ
       const contract = new ethers.Contract(nftAddress, nftABI, provider)
       if (!isEventListenerCreated) {
         contract.on('NFTMinted', (minter: string) => {
