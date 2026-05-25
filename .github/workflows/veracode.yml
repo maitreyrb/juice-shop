@@ -25,8 +25,23 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      # Package only what's needed for SAST.
+      # Excluding node_modules, .git, tests, etc. keeps upload small
+      # and avoids HTTP 524 timeouts on Veracode's upload endpoint.
       - name: Package application for scanning
-        run: zip -r veracode-scan-target.zip ./ -x "*.git*"
+        run: |
+          zip -r veracode-scan-target.zip ./ \
+            -x "*.git*" \
+            -x "node_modules/*" \
+            -x "*/node_modules/*" \
+            -x "test/*" \
+            -x "tests/*" \
+            -x "*.zip" \
+            -x "frontend/node_modules/*" \
+            -x "build/*" \
+            -x "dist/*" \
+            -x "coverage/*"
+          ls -lh veracode-scan-target.zip
 
       - name: Set up Java
         uses: actions/setup-java@v4
@@ -40,31 +55,50 @@ jobs:
             https://downloads.veracode.com/securityscan/pipeline-scan-LATEST.zip
           unzip -o pipeline-scan-LATEST.zip
 
+      # Retry up to 3 times on transient upload failures (HTTP 5xx).
+      # --fail_on_severity makes it exit non-zero on High / Very High findings.
       - name: Run Veracode Pipeline Scan (fails on High / Very High)
         run: |
-          java -jar pipeline-scan.jar \
-            --veracode_api_id "${{ secrets.VERACODE_API_ID }}" \
-            --veracode_api_key "${{ secrets.VERACODE_API_KEY }}" \
-            --fail_on_severity="Very High, High" \
-            --file veracode-scan-target.zip
-        # No continue-on-error → pipeline FAILS if High/Very High found
+          set +e
+          for attempt in 1 2 3; do
+            echo "=== Pipeline Scan attempt $attempt ==="
+            java -jar pipeline-scan.jar \
+              --veracode_api_id "${{ secrets.VERACODE_API_ID }}" \
+              --veracode_api_key "${{ secrets.VERACODE_API_KEY }}" \
+              --fail_on_severity="Very High, High" \
+              --file veracode-scan-target.zip
+            rc=$?
+            # Exit codes: 0 = clean, 1 = findings at/above threshold (gate works),
+            # anything else = infrastructure / upload error -> retry.
+            if [ $rc -eq 0 ] || [ $rc -eq 1 ]; then
+              exit $rc
+            fi
+            echo "Transient failure (exit $rc). Retrying in 30s..."
+            sleep 30
+          done
+          echo "Pipeline Scan failed after 3 attempts."
+          exit 1
 
       - name: Convert pipeline scan results to SARIF
-        if: always()
+        if: always() && hashFiles('results.json') != ''
         uses: veracode/veracode-pipeline-scan-results-to-sarif@v1.0.6
         with:
           pipeline-results-json: results.json
 
       - name: Upload SARIF results to GitHub Security
-        if: always()
+        if: always() && hashFiles('veracode-results.sarif') != ''
         uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: veracode-results.sarif
           category: veracode-sast
 
   # ---------------------------------------------------------------
-  # Job 2: Veracode SCA (Software Composition Analysis)
+  # Job 2: Veracode SCA (SourceClear)
   # ---------------------------------------------------------------
+  # Note: CVSS-based failure thresholds for SCA are configured in the
+  # Veracode Platform under SCA Agent -> Workspaces -> Rules, NOT here.
+  # Set the rule "Fail build if vuln CVSS >= 7.0" in the workspace,
+  # and this job will exit non-zero accordingly.
   veracode-sca-scan:
     name: Veracode SCA (SourceClear)
     runs-on: ubuntu-latest
@@ -78,13 +112,11 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Run Veracode SCA agent (fails on High / Critical CVSS)
+      - name: Run Veracode SCA agent
         env:
           SRCCLR_API_TOKEN: ${{ secrets.SRCCLR_API_TOKEN }}
         uses: veracode/veracode-sca@v2.1.9
         with:
-          # Fail the build if any vuln with CVSS >= 7.0 (High/Critical) is found
           quick: false
           create-issues: false
           allow-dirty: true
-          fail-on-cvss: '7.0'
