@@ -10,7 +10,7 @@ on:
 
 jobs:
   # ---------------------------------------------------------------
-  # Job 1: Veracode Pipeline Scan (SAST)
+  # Job 1: Veracode Pipeline Scan (SAST) - fast CI/CD feedback
   # ---------------------------------------------------------------
   veracode-pipeline-scan:
     name: Veracode SAST (Pipeline Scan)
@@ -25,9 +25,6 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # Package only what's needed for SAST.
-      # Excluding node_modules, .git, tests, etc. keeps upload small
-      # and avoids HTTP 524 timeouts on Veracode's upload endpoint.
       - name: Package application for scanning
         run: |
           zip -r veracode-scan-target.zip ./ \
@@ -55,29 +52,49 @@ jobs:
             https://downloads.veracode.com/securityscan/pipeline-scan-LATEST.zip
           unzip -o pipeline-scan-LATEST.zip
 
-      # Retry up to 3 times on transient upload failures (HTTP 5xx).
-      # --fail_on_severity makes it exit non-zero on High / Very High findings.
+      # Retry ONLY on infrastructure failures (no results.json produced).
+      # If scan completes (results.json exists), respect its exit code -
+      # whether 0 (clean), 8 (8 findings), or any other count.
       - name: Run Veracode Pipeline Scan (fails on High / Very High)
         run: |
           set +e
+          rm -f results.json filtered_results.json
+          final_rc=1
+
           for attempt in 1 2 3; do
             echo "=== Pipeline Scan attempt $attempt ==="
+            rm -f results.json filtered_results.json
+
             java -jar pipeline-scan.jar \
               --veracode_api_id "${{ secrets.VERACODE_API_ID }}" \
               --veracode_api_key "${{ secrets.VERACODE_API_KEY }}" \
               --fail_on_severity="Very High, High" \
+              --project_name "${{ github.repository }}" \
+              --project_url "${{ github.server_url }}/${{ github.repository }}" \
+              --project_ref "${{ github.ref_name }}" \
+              --issue_details true \
               --file veracode-scan-target.zip
             rc=$?
-            # Exit codes: 0 = clean, 1 = findings at/above threshold (gate works),
-            # anything else = infrastructure / upload error -> retry.
-            if [ $rc -eq 0 ] || [ $rc -eq 1 ]; then
-              exit $rc
+
+            # Did the scan actually produce results?
+            if [ -f results.json ]; then
+              echo "Scan completed (exit $rc). Results produced."
+              final_rc=$rc
+              break
             fi
-            echo "Transient failure (exit $rc). Retrying in 30s..."
-            sleep 30
+
+            echo "No results.json produced (exit $rc). Treating as transient infra failure."
+            if [ $attempt -lt 3 ]; then
+              echo "Retrying in 30s..."
+              sleep 30
+            fi
           done
-          echo "Pipeline Scan failed after 3 attempts."
-          exit 1
+
+          # final_rc:
+          #   0  = no findings at/above threshold -> PASS
+          #   >0 = N findings at/above threshold  -> FAIL the gate
+          echo "Final exit code: $final_rc"
+          exit $final_rc
 
       - name: Convert pipeline scan results to SARIF
         if: always() && hashFiles('results.json') != ''
@@ -95,10 +112,8 @@ jobs:
   # ---------------------------------------------------------------
   # Job 2: Veracode SCA (SourceClear)
   # ---------------------------------------------------------------
-  # Note: CVSS-based failure thresholds for SCA are configured in the
-  # Veracode Platform under SCA Agent -> Workspaces -> Rules, NOT here.
-  # Set the rule "Fail build if vuln CVSS >= 7.0" in the workspace,
-  # and this job will exit non-zero accordingly.
+  # CVSS-based failure thresholds are configured in the Veracode Platform
+  # under SCA Agent -> Workspaces -> Rules.
   veracode-sca-scan:
     name: Veracode SCA (SourceClear)
     runs-on: ubuntu-latest
@@ -120,3 +135,36 @@ jobs:
           quick: false
           create-issues: false
           allow-dirty: true
+
+  # ---------------------------------------------------------------
+  # Job 3 (OPTIONAL): Veracode Policy Scan - publishes to platform
+  # ---------------------------------------------------------------
+  # Runs only on schedule (weekly) since it's slow (~hours).
+  # This is what makes your app appear in the Veracode Platform UI
+  # with full policy enforcement and historical tracking.
+  # veracode-policy-scan:
+  #   name: Veracode Policy Scan (Platform)
+  #   runs-on: ubuntu-latest
+  #   if: github.event_name == 'schedule'
+
+  #   steps:
+  #     - name: Checkout repository
+  #       uses: actions/checkout@v4
+
+  #     - name: Package application
+  #       run: |
+  #         zip -r veracode-scan-target.zip ./ \
+  #           -x "*.git*" -x "node_modules/*" -x "*/node_modules/*" \
+  #           -x "test/*" -x "tests/*" -x "build/*" -x "dist/*" -x "coverage/*"
+
+  #     - name: Veracode Upload And Scan
+  #       uses: veracode/veracode-uploadandscan-action@0.2.7
+  #       with:
+  #         appname: '${{ github.event.repository.name }}'
+  #         createprofile: true
+  #         filepath: 'veracode-scan-target.zip'
+  #         vid: '${{ secrets.VERACODE_API_ID }}'
+  #         vkey: '${{ secrets.VERACODE_API_KEY }}'
+  #         # Wait for scan to complete and fail on policy violations
+  #         scantimeout: 60
+  #         createsandbox: false
