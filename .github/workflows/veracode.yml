@@ -1,0 +1,90 @@
+name: Veracode Security Scans
+
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+    branches: [ master ]
+  schedule:
+    - cron: '11 0 * * 0'
+
+jobs:
+  # ---------------------------------------------------------------
+  # Job 1: Veracode Pipeline Scan (SAST)
+  # ---------------------------------------------------------------
+  veracode-pipeline-scan:
+    name: Veracode SAST (Pipeline Scan)
+    runs-on: ubuntu-latest
+
+    permissions:
+      security-events: write
+      actions: read
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Package application for scanning
+        run: zip -r veracode-scan-target.zip ./ -x "*.git*"
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Download Veracode Pipeline Scan CLI
+        run: |
+          curl --silent --show-error --fail -O \
+            https://downloads.veracode.com/securityscan/pipeline-scan-LATEST.zip
+          unzip -o pipeline-scan-LATEST.zip
+
+      - name: Run Veracode Pipeline Scan (fails on High / Very High)
+        run: |
+          java -jar pipeline-scan.jar \
+            --veracode_api_id "${{ secrets.VERACODE_API_ID }}" \
+            --veracode_api_key "${{ secrets.VERACODE_API_KEY }}" \
+            --fail_on_severity="Very High, High" \
+            --file veracode-scan-target.zip
+        # No continue-on-error → pipeline FAILS if High/Very High found
+
+      - name: Convert pipeline scan results to SARIF
+        if: always()
+        uses: veracode/veracode-pipeline-scan-results-to-sarif@v1.0.6
+        with:
+          pipeline-results-json: results.json
+
+      - name: Upload SARIF results to GitHub Security
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: veracode-results.sarif
+          category: veracode-sast
+
+  # ---------------------------------------------------------------
+  # Job 2: Veracode SCA (Software Composition Analysis)
+  # ---------------------------------------------------------------
+  veracode-sca-scan:
+    name: Veracode SCA (SourceClear)
+    runs-on: ubuntu-latest
+
+    permissions:
+      security-events: write
+      actions: read
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Run Veracode SCA agent (fails on High / Critical CVSS)
+        env:
+          SRCCLR_API_TOKEN: ${{ secrets.SRCCLR_API_TOKEN }}
+        uses: veracode/veracode-sca@v2.1.9
+        with:
+          # Fail the build if any vuln with CVSS >= 7.0 (High/Critical) is found
+          quick: false
+          create-issues: false
+          allow-dirty: true
+          fail-on-cvss: '7.0'
