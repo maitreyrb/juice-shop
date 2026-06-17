@@ -44,3 +44,7 @@ module.exports.walletNFTVerify = function walletNFTVerify () {
     }
   }
 }
+
+
+ghp_1234567890abcdefghijklmnopqrstuvwxyz
+wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
