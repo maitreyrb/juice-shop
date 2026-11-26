@@ -1,9 +1,4 @@
-# ─────────────────────────────────────────────────────────────────────
-# Ostorlab SAST / SCA / SBOM Scan
-# Path: .github/workflows/ostorlab-sast-sca-sbom.yml
-# Secret required: OSTORLAB_API_KEY
-# ─────────────────────────────────────────────────────────────────────
-name: Ostorlab SAST-SCA-SBOM Scan
+name: Ostorlab Web Security Scan
 
 on:
   push:
@@ -15,62 +10,45 @@ on:
 permissions:
   contents: read
 
-env:
-  ASSET_TYPE: android-apk          # android-apk | android-aab | ios-ipa
-  APP_PATH: app-release.apk        # path to the app file to scan
-  RISK_THRESHOLD: high             # fails if risk rating is higher (high = fail on Critical)
-  MAX_WAIT_MINUTES: "45"
+concurrency:
+  group: ostorlab-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  # ─────────────── SBOM ───────────────
-  sbom:
-    name: SBOM Generation
+  ostorlab-web-scan:
+    name: Scan UAT with Ostorlab
     runs-on: ubuntu-latest
+
+    # Repository secrets are not provided to workflows from forked PRs.
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      github.event.pull_request.head.repo.full_name == github.repository
+
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Generate CycloneDX SBOM
-        uses: anchore/sbom-action@v0
+      - name: Launch Ostorlab web scan
+        id: ostorlab
+        uses: Ostorlab/ostorlab_actions@v2.1.0
         with:
-          path: .
-          format: cyclonedx-json
-          output-file: sbom.cdx.json
-          upload-artifact: false
+          scan_profile: full_web_scan
+          asset_type: link --url
+          target: https://uat.riyadhair.io/en-ie/home
+          scan_title: GitHub CI - ${{ github.repository }} - ${{ github.sha }}
+          ostorlab_api_key: ${{ secrets.TEST_INTEGRATION }}
 
-      - name: Upload SBOM
-        uses: actions/upload-artifact@v4
-        with:
-          name: sbom
-          path: sbom.cdx.json
+          # During initial validation, this waits for the result and
+          # fails only if the final rating is above HIGH, meaning CRITICAL.
+          break_on_risk_rating: HIGH
+          max_wait_minutes: 60
 
-  # ─────────────── SAST + SCA ───────────────
-  sast-sca:
-    name: Ostorlab SAST & SCA
-    needs: sbom
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Download SBOM
-        uses: actions/download-artifact@v4
-        with:
-          name: sbom
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Install Ostorlab CLI
-        run: pip install ostorlab
-
-      - name: Run SAST & SCA scan (fast_scan = static analysis)
+      - name: Publish scan summary
+        if: always() && steps.ostorlab.outputs.scan_id != ''
         env:
-          OSTORLAB_API_KEY: ${{ secrets.OSTORLAB_API_KEY }}
+          SCAN_ID: ${{ steps.ostorlab.outputs.scan_id }}
         run: |
-          ostorlab --api-key "$OSTORLAB_API_KEY" ci-scan run \
-            --scan-profile fast_scan \
-            --title "SAST-SCA | ${{ github.repository }} | ${{ github.sha }}" \
-            --break-on-risk-rating "$RISK_THRESHOLD" \
-            --max-wait-minutes "$MAX_WAIT_MINUTES" \
-            --sbom sbom.cdx.json \
-            "$ASSET_TYPE" "$APP_PATH"
+          {
+            echo "## Ostorlab web security scan"
+            echo ""
+            echo "- Target: https://uat.riyadhair.io/en-ie/home"
+            echo "- Scan ID: ${SCAN_ID}"
+            echo "- Report: https://report.ostorlab.co/scan/${SCAN_ID}/"
+          } >> "$GITHUB_STEP_SUMMARY"
