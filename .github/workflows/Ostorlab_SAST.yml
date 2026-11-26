@@ -1,0 +1,76 @@
+# ─────────────────────────────────────────────────────────────────────
+# Ostorlab SAST / SCA / SBOM Scan
+# Path: .github/workflows/ostorlab-sast-sca-sbom.yml
+# Secret required: OSTORLAB_API_KEY
+# ─────────────────────────────────────────────────────────────────────
+name: Ostorlab SAST-SCA-SBOM Scan
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  ASSET_TYPE: android-apk          # android-apk | android-aab | ios-ipa
+  APP_PATH: app-release.apk        # path to the app file to scan
+  RISK_THRESHOLD: high             # fails if risk rating is higher (high = fail on Critical)
+  MAX_WAIT_MINUTES: "45"
+
+jobs:
+  # ─────────────── SBOM ───────────────
+  sbom:
+    name: SBOM Generation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Generate CycloneDX SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          path: .
+          format: cyclonedx-json
+          output-file: sbom.cdx.json
+          upload-artifact: false
+
+      - name: Upload SBOM
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: sbom.cdx.json
+
+  # ─────────────── SAST + SCA ───────────────
+  sast-sca:
+    name: Ostorlab SAST & SCA
+    needs: sbom
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download SBOM
+        uses: actions/download-artifact@v4
+        with:
+          name: sbom
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Ostorlab CLI
+        run: pip install ostorlab
+
+      - name: Run SAST & SCA scan (fast_scan = static analysis)
+        env:
+          OSTORLAB_API_KEY: ${{ secrets.OSTORLAB_API_KEY }}
+        run: |
+          ostorlab --api-key "$OSTORLAB_API_KEY" ci-scan run \
+            --scan-profile fast_scan \
+            --title "SAST-SCA | ${{ github.repository }} | ${{ github.sha }}" \
+            --break-on-risk-rating "$RISK_THRESHOLD" \
+            --max-wait-minutes "$MAX_WAIT_MINUTES" \
+            --sbom sbom.cdx.json \
+            "$ASSET_TYPE" "$APP_PATH"
